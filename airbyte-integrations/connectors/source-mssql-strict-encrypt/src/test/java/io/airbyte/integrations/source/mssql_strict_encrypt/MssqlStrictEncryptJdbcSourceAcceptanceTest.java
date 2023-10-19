@@ -2,7 +2,7 @@
  * Copyright (c) 2023 Airbyte, Inc., all rights reserved.
  */
 
-package io.airbyte.integrations.source.mssql;
+package io.airbyte.integrations.source.mssql_strict_encrypt;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -20,8 +20,17 @@ import io.airbyte.cdk.integrations.source.jdbc.test.JdbcSourceAcceptanceTest;
 import io.airbyte.commons.json.Jsons;
 import io.airbyte.commons.resources.MoreResources;
 import io.airbyte.commons.string.Strings;
+import io.airbyte.integrations.source.mssql.MssqlSource;
+import io.airbyte.protocol.models.Field;
+import io.airbyte.protocol.models.JsonSchemaType;
+import io.airbyte.protocol.models.v0.AirbyteCatalog;
+import io.airbyte.protocol.models.v0.CatalogHelpers;
 import io.airbyte.protocol.models.v0.ConnectorSpecification;
+import io.airbyte.protocol.models.v0.SyncMode;
 import java.sql.JDBCType;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterAll;
@@ -42,8 +51,10 @@ public class MssqlStrictEncryptJdbcSourceAcceptanceTest extends JdbcSourceAccept
     // the datetime type instead so that we can set the value manually.
     COL_TIMESTAMP_TYPE = "DATETIME";
 
-    dbContainer = new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2019-latest").acceptLicense();
-    dbContainer.start();
+    if (dbContainer == null) {
+      dbContainer = new MSSQLServerContainer<>("mcr.microsoft.com/mssql/server:2022-RTM-CU2-ubuntu-20.04").acceptLicense();
+      dbContainer.start();
+    }
   }
 
   @BeforeEach
@@ -59,9 +70,9 @@ public class MssqlStrictEncryptJdbcSourceAcceptanceTest extends JdbcSourceAccept
         configWithoutDbName.get(JdbcUtils.USERNAME_KEY).asText(),
         configWithoutDbName.get(JdbcUtils.PASSWORD_KEY).asText(),
         DatabaseDriver.MSSQLSERVER.getDriverClassName(),
-        String.format("jdbc:sqlserver://%s:%d",
-            configWithoutDbName.get(JdbcUtils.HOST_KEY).asText(),
-            configWithoutDbName.get(JdbcUtils.PORT_KEY).asInt()));
+        String.format("jdbc:sqlserver://%s:%d;encrypt=true;trustServerCertificate=true;",
+                      dbContainer.getHost(),
+                      dbContainer.getFirstMappedPort()));
 
     try {
       database = new DefaultJdbcDatabase(dataSource);
@@ -72,6 +83,7 @@ public class MssqlStrictEncryptJdbcSourceAcceptanceTest extends JdbcSourceAccept
 
       config = Jsons.clone(configWithoutDbName);
       ((ObjectNode) config).put(JdbcUtils.DATABASE_KEY, dbName);
+      ((ObjectNode) config).put("ssl_method", Jsons.jsonNode(Map.of("ssl_method", "encrypted_trust_server_certificate")));
 
       super.setup();
     } finally {
@@ -104,9 +116,10 @@ public class MssqlStrictEncryptJdbcSourceAcceptanceTest extends JdbcSourceAccept
     return MssqlSource.DRIVER_CLASS;
   }
 
+
   @Override
   public AbstractJdbcSource<JDBCType> getJdbcSource() {
-    return null;
+    return new MssqlSource();
   }
 
   @Override
@@ -121,6 +134,36 @@ public class MssqlStrictEncryptJdbcSourceAcceptanceTest extends JdbcSourceAccept
         SshHelpers.injectSshIntoSpec(Jsons.deserialize(MoreResources.readResource("expected_spec.json"), ConnectorSpecification.class));
 
     assertEquals(expected, actual);
+  }
+
+  @Override
+  protected AirbyteCatalog getCatalog(final String defaultNamespace) {
+    return new AirbyteCatalog().withStreams(List.of(
+        CatalogHelpers.createAirbyteStream(
+                TABLE_NAME,
+                defaultNamespace,
+                Field.of(COL_ID, JsonSchemaType.INTEGER),
+                Field.of(COL_NAME, JsonSchemaType.STRING),
+                Field.of(COL_UPDATED_AT, JsonSchemaType.STRING_DATE))
+            .withSupportedSyncModes(List.of(SyncMode.FULL_REFRESH, SyncMode.INCREMENTAL))
+            .withSourceDefinedPrimaryKey(List.of(List.of(COL_ID))),
+        CatalogHelpers.createAirbyteStream(
+                TABLE_NAME_WITHOUT_PK,
+                defaultNamespace,
+                Field.of(COL_ID, JsonSchemaType.INTEGER),
+                Field.of(COL_NAME, JsonSchemaType.STRING),
+                Field.of(COL_UPDATED_AT, JsonSchemaType.STRING_DATE))
+            .withSupportedSyncModes(List.of(SyncMode.FULL_REFRESH, SyncMode.INCREMENTAL))
+            .withSourceDefinedPrimaryKey(Collections.emptyList()),
+        CatalogHelpers.createAirbyteStream(
+                TABLE_NAME_COMPOSITE_PK,
+                defaultNamespace,
+                Field.of(COL_FIRST_NAME, JsonSchemaType.STRING),
+                Field.of(COL_LAST_NAME, JsonSchemaType.STRING),
+                Field.of(COL_UPDATED_AT, JsonSchemaType.STRING_DATE))
+            .withSupportedSyncModes(List.of(SyncMode.FULL_REFRESH, SyncMode.INCREMENTAL))
+            .withSourceDefinedPrimaryKey(
+                List.of(List.of(COL_FIRST_NAME), List.of(COL_LAST_NAME)))));
   }
 
 }
