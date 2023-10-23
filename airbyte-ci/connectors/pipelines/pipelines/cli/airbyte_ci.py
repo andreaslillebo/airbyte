@@ -214,6 +214,7 @@ def check_local_docker_configuration():
     help="Airbyte CI top-level command group.",
     lazy_subcommands={
         "connectors": "pipelines.airbyte_ci.connectors.commands.connectors",
+        "check": "pipelines.airbyte_ci.check.commands.check",
         "metadata": "pipelines.airbyte_ci.metadata.commands.metadata",
         "test": "pipelines.airbyte_ci.test.commands.test",
     },
