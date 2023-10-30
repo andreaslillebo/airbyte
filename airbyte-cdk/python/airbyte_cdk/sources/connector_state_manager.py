@@ -3,7 +3,9 @@
 #
 
 import copy
-from typing import Any, List, Mapping, MutableMapping, Optional, Tuple, Union
+from abc import ABC, abstractmethod
+from enum import Enum
+from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple, Union
 
 from airbyte_cdk.models import AirbyteMessage, AirbyteStateBlob, AirbyteStateMessage, AirbyteStateType, AirbyteStreamState, StreamDescriptor
 from airbyte_cdk.models import Type as MessageType
@@ -196,3 +198,72 @@ class ConnectorStateManager:
     @staticmethod
     def _is_per_stream_state(state: Union[List[AirbyteStateMessage], MutableMapping[str, Any]]) -> bool:
         return isinstance(state, List)
+
+
+class ConcurrencyCompatibleStateType(Enum):
+    date_range = "date-range"
+
+
+class ConcurrentConnectorStateManager(ConnectorStateManager, ABC):
+    START_KEY = "start"
+    END_KEY = "end"
+
+    def get_stream_state(self, name: str, namespace: Optional[str]) -> MutableMapping[str, Any]:
+        state = super().get_stream_state(name, namespace)
+        if self.is_state_message_compatible(state):
+            return state
+        return self.convert_from_sequential_state(state)
+
+    @staticmethod
+    def is_state_message_compatible(state: MutableMapping[str, Any]) -> bool:
+        return state.get("state_type") in [t.value for t in ConcurrencyCompatibleStateType]
+
+    @abstractmethod
+    def convert_from_sequential_state(self, stream_state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+        """
+        Convert the state message to the format required by the ThreadBasedConcurrentStream.
+
+        e.g.
+        {
+            "state_type": ConcurrencyCompatibleStateType.date_range.value,
+            "metadata": { … },
+            "slices": [
+                {starts: 0, end: 1617030403, finished_processing: true}]
+        }
+        """
+        ...
+
+    @abstractmethod
+    def convert_to_sequential_state(self, stream_state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+        """
+        Convert the state message from the concurrency-compatible format to the stream's original format.
+
+        e.g.
+        { "created": 1617030403 }
+        """
+        ...
+
+    def _get_low_water_mark(self, slices: MutableMapping[str, Any]) -> Optional[Any]:
+        """
+        Get the latest time before which all records have been processed.
+        """
+        if slices:
+            first_interval = self.merge_intervals(slices)[0][self.END_KEY]
+            return first_interval
+        else:
+            return None
+
+    @classmethod
+    def merge_intervals(cls, intervals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        sorted_intervals = sorted(intervals, key=lambda x: (x[cls.START_KEY], x[cls.END_KEY]))
+        try:
+            merged_intervals = [sorted_intervals[0]]
+        except IndexError:
+            return []
+        for interval in sorted_intervals[1:]:
+            if interval[cls.START_KEY] <= merged_intervals[-1][cls.END_KEY]:
+                merged_intervals[-1][cls.END_KEY] = interval[cls.END_KEY]
+            else:
+                merged_intervals.append(interval)
+
+        return merged_intervals
