@@ -2,7 +2,7 @@
 # Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 
-from typing import Any, List, Mapping, MutableMapping, Optional, Tuple, Union
+from typing import Any, List, Mapping, MutableMapping, Optional, Tuple
 
 import pendulum
 import stripe
@@ -13,9 +13,10 @@ from airbyte_cdk.sources import AbstractSource
 from airbyte_cdk.sources.declarative.extractors import DpathExtractor, RecordSelector
 from airbyte_cdk.sources.declarative.requesters import HttpRequester, RequestOption
 from airbyte_cdk.sources.declarative.requesters.paginators import DefaultPaginator
-from airbyte_cdk.sources.declarative.requesters.paginators.strategies import CursorPaginationStrategy
+from airbyte_cdk.sources.declarative.requesters.paginators.strategies import DECODED_RESPONSE_TYPE, CursorPaginationStrategy
 from airbyte_cdk.sources.declarative.requesters.request_option import RequestOptionType
 from airbyte_cdk.sources.declarative.requesters.request_options import InterpolatedRequestOptionsProvider
+from airbyte_cdk.sources.declarative.types import Record
 from airbyte_cdk.sources.message.repository import InMemoryMessageRepository
 from airbyte_cdk.sources.streams import Stream
 from airbyte_cdk.sources.streams.concurrent.adapters import StreamAvailabilityStrategy, StreamFacade
@@ -45,12 +46,10 @@ _PAGE_SIZE = 100
 
 
 class StripePaginationStrategy(CursorPaginationStrategy):
-    def stop(self, response: Union[Mapping[str, Any], List], headers: Mapping[str, Any], last_records: List[Mapping[str, Any]]) -> bool:
+    def stop(self, response: DECODED_RESPONSE_TYPE, headers: Mapping[str, Any], last_records: List[Record]) -> bool:
         return "has_more" not in response
 
-    def get_cursor_value(
-        self, response: Union[Mapping[str, Any], List], headers: Mapping[str, Any], last_records: List[Mapping[str, Any]]
-    ) -> Optional[str]:
+    def get_cursor_value(self, response: DECODED_RESPONSE_TYPE, headers: Mapping[str, Any], last_records: List[Record]) -> Optional[str]:
         if "has_more" in response and response["has_more"] and response.get("data", []):
             last_object_id = response["data"][-1]["id"]
             return last_object_id
