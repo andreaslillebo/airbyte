@@ -11,11 +11,7 @@ from airbyte_cdk.entrypoint import logger as entrypoint_logger
 from airbyte_cdk.models import FailureType
 from airbyte_cdk.models.airbyte_protocol import ConfiguredAirbyteCatalog, ConfiguredAirbyteStream, SyncMode
 from airbyte_cdk.sources import AbstractSource
-from airbyte_cdk.sources.connector_state_manager import (
-    ConcurrencyCompatibleStateType,
-    ConcurrentConnectorStateManager,
-    ConnectorStateManager,
-)
+from airbyte_cdk.sources.connector_state_manager import ConnectorStateManager, EpochValueStateConverter
 from airbyte_cdk.sources.message.repository import InMemoryMessageRepository
 from airbyte_cdk.sources.streams import Stream
 from airbyte_cdk.sources.streams.concurrent.adapters import StreamFacade
@@ -37,59 +33,6 @@ from source_stripe.streams import (
     UpdatedCursorIncrementalStripeLazySubStream,
     UpdatedCursorIncrementalStripeStream,
 )
-
-
-class StripeConcurrentConnectorStateManager(ConcurrentConnectorStateManager):
-    def convert_from_sequential_state(self, stream_state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
-        """
-        e.g.
-        { "created": 1617030403 }
-        =>
-        {
-            "state_type": "date-range",
-            "metadata": { … },
-            "slices": [
-                {starts: 0, end: 1617030403, finished_processing: true}
-            ]
-        }
-        """
-        if self.is_state_message_compatible(stream_state):
-            return stream_state
-        if "created" in stream_state:
-            slices = [
-                {
-                    ConcurrentConnectorStateManager.START_KEY: 0,
-                    ConcurrentConnectorStateManager.END_KEY: stream_state["created"],
-                },
-            ]
-        else:
-            slices = []
-        return {
-            "state_type": ConcurrencyCompatibleStateType.date_range.value,
-            "slices": slices,
-            "legacy": stream_state,
-        }
-
-    def convert_to_sequential_state(self, stream_state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
-        """
-        e.g.
-        {
-            "state_type": "date-range",
-            "metadata": { … },
-            "slices": [
-                {starts: 0, end: 1617030403, finished_processing: true}
-            ]
-        }
-        =>
-        { "created": 1617030403 }
-        """
-        if self.is_state_message_compatible(stream_state):
-            legacy_state = stream_state.get("legacy", {})
-            if slices := stream_state.pop("slices", None):
-                legacy_state.update({"created": self._get_low_water_mark(slices)})
-            return legacy_state
-        else:
-            return stream_state
 
 
 class SourceStripe(AbstractSource):
@@ -485,7 +428,7 @@ class SourceStripe(AbstractSource):
             ),
         ]
         if self._use_concurrent_cdk:
-            state_manager = StripeConcurrentConnectorStateManager(stream_instance_map={s.name: s for s in streams}, state=self._state)
+            state_manager = EpochValueStateConverter(stream_instance_map={s.name: s for s in streams}, state=self._state)
             return [
                 StreamFacade.create_from_stream(
                     stream,

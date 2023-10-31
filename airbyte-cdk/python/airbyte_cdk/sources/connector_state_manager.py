@@ -243,7 +243,7 @@ class ConcurrentConnectorStateManager(ConnectorStateManager, ABC):
         """
         ...
 
-    def _get_low_water_mark(self, slices: MutableMapping[str, Any]) -> Optional[Any]:
+    def _get_latest_complete_time(self, slices: MutableMapping[str, Any]) -> Optional[Any]:
         """
         Get the latest time before which all records have been processed.
         """
@@ -253,6 +253,14 @@ class ConcurrentConnectorStateManager(ConnectorStateManager, ABC):
         else:
             return None
 
+    @staticmethod
+    @abstractmethod
+    def increment(timestamp: Any) -> Any:
+        """
+        Increment a timestamp by a single unit.
+        """
+        ...
+
     @classmethod
     def merge_intervals(cls, intervals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         sorted_intervals = sorted(intervals, key=lambda x: (x[cls.START_KEY], x[cls.END_KEY]))
@@ -261,9 +269,66 @@ class ConcurrentConnectorStateManager(ConnectorStateManager, ABC):
         except IndexError:
             return []
         for interval in sorted_intervals[1:]:
-            if interval[cls.START_KEY] <= merged_intervals[-1][cls.END_KEY]:
+            if interval[cls.START_KEY] <= cls.increment(merged_intervals[-1][cls.END_KEY]):
                 merged_intervals[-1][cls.END_KEY] = interval[cls.END_KEY]
             else:
                 merged_intervals.append(interval)
 
         return merged_intervals
+
+
+class EpochValueStateConverter(ConcurrentConnectorStateManager):
+    def convert_from_sequential_state(self, stream_state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+        """
+        e.g.
+        { "created": 1617030403 }
+        =>
+        {
+            "state_type": "date-range",
+            "metadata": { … },
+            "slices": [
+                {starts: 0, end: 1617030403, finished_processing: true}
+            ]
+        }
+        """
+        if self.is_state_message_compatible(stream_state):
+            return stream_state
+        if "created" in stream_state:
+            slices = [
+                {
+                    ConcurrentConnectorStateManager.START_KEY: 0,
+                    ConcurrentConnectorStateManager.END_KEY: stream_state["created"],
+                },
+            ]
+        else:
+            slices = []
+        return {
+            "state_type": ConcurrencyCompatibleStateType.date_range.value,
+            "slices": slices,
+            "legacy": stream_state,
+        }
+
+    def convert_to_sequential_state(self, stream_state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+        """
+        e.g.
+        {
+            "state_type": "date-range",
+            "metadata": { … },
+            "slices": [
+                {starts: 0, end: 1617030403, finished_processing: true}
+            ]
+        }
+        =>
+        { "created": 1617030403 }
+        """
+        if self.is_state_message_compatible(stream_state):
+            legacy_state = stream_state.get("legacy", {})
+            if slices := stream_state.pop("slices", None):
+                legacy_state.update({"created": self._get_latest_complete_time(slices)})
+            return legacy_state
+        else:
+            return stream_state
+
+    @staticmethod
+    def increment(timestamp: Any) -> Any:
+        return timestamp + 1

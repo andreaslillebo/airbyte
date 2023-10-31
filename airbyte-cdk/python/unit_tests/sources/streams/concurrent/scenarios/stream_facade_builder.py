@@ -66,10 +66,14 @@ class StreamFacadeConcurrentConnectorStateManager(ConcurrentConnectorStateManage
         if self.is_state_message_compatible(stream_state):
             legacy_state = stream_state.get("legacy", {})
             if slices := stream_state.pop("slices", None):
-                legacy_state.update({"created": self._get_low_water_mark(slices)})
+                legacy_state.update({"created": self._get_latest_complete_time(slices)})
             return legacy_state
         else:
             return stream_state
+
+    @staticmethod
+    def increment(timestamp: Any) -> Any:
+        return timestamp + 1
 
 
 class StreamFacadeSource(AbstractSource):

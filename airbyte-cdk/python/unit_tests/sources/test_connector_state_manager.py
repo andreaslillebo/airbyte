@@ -20,6 +20,7 @@ from airbyte_cdk.sources.connector_state_manager import (
     ConcurrencyCompatibleStateType,
     ConcurrentConnectorStateManager,
     ConnectorStateManager,
+    EpochValueStateConverter,
     HashableStreamDescriptor,
 )
 from airbyte_cdk.sources.streams import Stream
@@ -614,6 +615,10 @@ class MockConcurrentConnectorStateManager(ConcurrentConnectorStateManager):
         state.pop("state_type")
         return state
 
+    @staticmethod
+    def increment(timestamp: Any) -> Any:
+        return timestamp + 1
+
 
 @pytest.mark.parametrize(
     "stream, input_state, expected_output_state",
@@ -736,7 +741,12 @@ def test_concurrent_connector_state_manager_is_state_message_compatible(input_st
         ),
         pytest.param(
             [{"start": 0, "end": 1}, {"start": 2, "end": 3}],
-            [{"start": 0, "end": 1}, {"start": 2, "end": 3}],
+            [{"start": 0, "end": 3}],
+            id="adjacent-intervals",
+        ),
+        pytest.param(
+            [{"start": 3, "end": 4}, {"start": 0, "end": 1}],
+            [{"start": 0, "end": 1}, {"start": 3, "end": 4}],
             id="nonoverlapping-intervals",
         ),
         pytest.param(
@@ -744,12 +754,55 @@ def test_concurrent_connector_state_manager_is_state_message_compatible(input_st
             [{"start": 0, "end": 4}, {"start": 10, "end": 11}],
             id="overlapping-and-nonoverlapping-intervals",
         ),
-        pytest.param(
-            [{"start": "0", "end": "1"}, {"start": "2", "end": "3"}, {"start": "10", "end": "11"}, {"start": "1", "end": "4"}],
-            [{"start": "0", "end": "4"}, {"start": "10", "end": "11"}],
-            id="non-numeric-intervals",
-        ),
     ],
 )
 def test_concurrent_connector_state_manager_merge_intervals(input_intervals, expected_merged_intervals):
-    return ConcurrentConnectorStateManager.merge_intervals(input_intervals) == expected_merged_intervals
+    return MockConcurrentConnectorStateManager.merge_intervals(input_intervals) == expected_merged_intervals
+
+
+@pytest.mark.parametrize(
+    "stream, sequential_state, expected_output_state",
+    [
+        pytest.param(
+            AirbyteStream(name="stream1", json_schema={}, supported_sync_modes=["incremental"]),
+            {},
+            {"slices": [], "state_type": ConcurrencyCompatibleStateType.date_range.value, "legacy": {}},
+            id="empty-input-state",
+        ),
+        pytest.param(
+            AirbyteStream(name="stream1", json_schema={}, supported_sync_modes=["incremental"]),
+            {"created": 1617030403},
+            {
+                "state_type": "date-range",
+                "slices": [{"start": 0, "end": 1617030403}],
+                "legacy": {"created": 1617030403},
+            },
+            id="with-input-state",
+        ),
+    ],
+)
+def test_epoch_state_manager_convert_from_sequential_state(stream, sequential_state, expected_output_state):
+    state_manager = EpochValueStateConverter({"charges": stream}, {"charges": sequential_state})
+    assert state_manager.convert_from_sequential_state(sequential_state) == expected_output_state
+
+
+@pytest.mark.parametrize(
+    "stream, concurrent_state, expected_output_state",
+    [
+        pytest.param(
+            AirbyteStream(name="stream1", json_schema={}, supported_sync_modes=["incremental"]),
+            {"state_type": ConcurrencyCompatibleStateType.date_range.value},
+            {},
+            id="empty-input-state",
+        ),
+        pytest.param(
+            AirbyteStream(name="stream1", json_schema={}, supported_sync_modes=["incremental"]),
+            {"state_type": "date-range", "slices": [{"start": 0, "end": 1617030403}]},
+            {"created": 1617030403},
+            id="with-input-state",
+        ),
+    ],
+)
+def test_epoch_state_manager_convert_to_sequential_state(stream, concurrent_state, expected_output_state):
+    state_manager = EpochValueStateConverter({"stream1": stream}, {"charges": concurrent_state})
+    assert state_manager.convert_to_sequential_state(concurrent_state) == expected_output_state
